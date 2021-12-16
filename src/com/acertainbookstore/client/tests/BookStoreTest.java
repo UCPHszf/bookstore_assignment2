@@ -7,18 +7,13 @@ import java.lang.reflect.Method;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import com.acertainbookstore.business.*;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import com.acertainbookstore.business.Book;
-import com.acertainbookstore.business.BookCopy;
-import com.acertainbookstore.business.SingleLockConcurrentCertainBookStore;
-import com.acertainbookstore.business.ImmutableStockBook;
-import com.acertainbookstore.business.StockBook;
-import com.acertainbookstore.business.TwoLevelLockingConcurrentCertainBookStore;
 import com.acertainbookstore.client.BookStoreHTTPProxy;
 import com.acertainbookstore.client.StockManagerHTTPProxy;
 import com.acertainbookstore.interfaces.BookStore;
@@ -68,6 +63,11 @@ public class BookStoreTest {
      * Flag for checking if snapshot is wrong
      */
     private static boolean snapshotError = false;
+
+    /**
+     * Flag for checking if top-rated book is wrong
+     */
+    private static boolean totalRatingError = false;
 
     /**
      * Sets the up before class.
@@ -394,6 +394,32 @@ public class BookStoreTest {
         }
     }
 
+    public class CheckTopRatedBooksRunnable implements Runnable {
+
+        int times;
+
+        public CheckTopRatedBooksRunnable(int times) {
+            this.times = times;
+        }
+
+        @Override
+        public void run() {
+            for (int i = 0; i < times; i++) {
+                List<Book> books = new ArrayList<>();
+                try {
+                    books = storeManager.getBooks().stream().sorted((o1, o2) ->
+                            Integer.compare((int) o2.getTotalRating(), (int) o1.getTotalRating())).limit(2).collect(Collectors.toList());
+                } catch (BookStoreException e) {
+                    totalRatingError = true;
+                    e.printStackTrace();
+                }
+                if (books.get(0).getISBN() != TEST_ISBN + 3 || books.get(1).getISBN() != TEST_ISBN + 2) {
+                    totalRatingError = true;
+                }
+            }
+        }
+    }
+
     public class StoreMethodRunnable implements Runnable {
         Object[] storeObject;
         String[] methodName;
@@ -506,8 +532,11 @@ public class BookStoreTest {
     }
 
     @Test
-    public void testDeadLock() throws BookStoreException {
-        //addBooks(TEST_ISBN + 1, NUM_COPIES);
+    public void testPotentialDeadLock() throws BookStoreException {
+        storeManager.removeAllBooks();
+        for (int i = 1; i < 100000; i++) {
+            addBooks(TEST_ISBN + i, NUM_COPIES);
+        }
         List<StockBook> initBooks = storeManager.getBooks();
         Set<BookCopy> booksToBuy = storeManager.getBooks().stream()
                 .map(stockBook -> new BookCopy(stockBook.getISBN(), 1))
@@ -515,23 +544,56 @@ public class BookStoreTest {
         Object[][] args = new Object[1][];
         args[0] = new Object[1];
         args[0][0] = booksToBuy;
-        int TIMES = 100000;
-        Thread c1 = new Thread(new StoreMethodRunnable(new Object[]{storeManager},
-                new String[]{"addCopies"}, args, TIMES));
-        Thread c2 = new Thread(new StoreMethodRunnable(new Object[]{storeManager},
-                new String[]{"addCopies"}, args, TIMES));
+        int TIMES = 1000;
+        int NUM_OF_THREADS = 100;
+        List<Thread> threads = new ArrayList<>();
+        for (int i = 0; i < NUM_OF_THREADS; i++) {
+            Thread c = new Thread(new StoreMethodRunnable(new Object[]{storeManager},
+                    new String[]{"addCopies"}, args, TIMES));
+            threads.add(c);
+        }
+//        Thread c1 = new Thread(new StoreMethodRunnable(new Object[]{storeManager},
+//                new String[]{"addCopies"}, args, TIMES));
+//        Thread c2 = new Thread(new StoreMethodRunnable(new Object[]{storeManager},
+//                new String[]{"addCopies"}, args, TIMES));
+        for (Thread thread : threads) {
+            thread.start();
+        }
+//        c1.start();
+//        c2.start();
+        try {
+            for (Thread thread : threads) thread.join();
+            List<StockBook> books = storeManager.getBooks();
+            for (int i = 0; i < initBooks.size(); i++) {
+                assertEquals(books.get(i).getNumCopies(), initBooks.get(i).getNumCopies() + NUM_OF_THREADS * TIMES);
+            }
+        } catch (Exception e) {
+            fail(e.toString());
+        }
+    }
+
+    @Test
+    public void testTotalRating() throws BookStoreException {
+        storeManager.removeAllBooks();
+        addBooks(TEST_ISBN + 1, NUM_COPIES);
+        addBooks(TEST_ISBN + 2, NUM_COPIES);
+        addBooks(TEST_ISBN + 3, NUM_COPIES);
+        Set<BookRating> bookRatings = storeManager.getBooks().stream()
+                .map(stockBook -> new BookRating(stockBook.getISBN(), stockBook.getISBN() - TEST_ISBN)).collect(Collectors.toSet());
+        Object[][] args = new Object[1][];
+        args[0] = new Object[1];
+        args[0][0] = bookRatings;
+        Thread c1 = new Thread(new StoreMethodRunnable(new Object[]{client}, new String[]{"rateBooks"}, args, 10000));
+        Thread c2 = new Thread(new CheckTopRatedBooksRunnable(10000));
         c1.start();
         c2.start();
         try {
             c1.join();
             c2.join();
-            List<StockBook> books = storeManager.getBooks();
-            for (int i = 0; i < initBooks.size(); i++) {
-                assertEquals(books.get(i).getNumCopies(), initBooks.get(i).getNumCopies() + 2 * TIMES);
-            }
-        } catch (Exception e) {
-            fail(e.toString());
+        } catch (InterruptedException e) {
+            e.printStackTrace();
         }
+        assertFalse(totalRatingError);
     }
 
     /**

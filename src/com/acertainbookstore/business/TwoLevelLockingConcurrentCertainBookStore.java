@@ -1,15 +1,7 @@
 package com.acertainbookstore.business;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.Map.Entry;
-import java.util.Random;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -459,8 +451,8 @@ public class TwoLevelLockingConcurrentCertainBookStore implements BookStore, Sto
         try {
             res = bookMap.values().stream()
                     .sorted((book1, book2) -> Float.compare(book2.getAverageRating(), book1.getAverageRating()))
-                    .map(BookStoreBook::immutableStockBook)
                     .limit(numBooks)
+                    .map(BookStoreBook::immutableBook)
                     .collect(Collectors.toList());
         } finally {
             releaseBottomLevelReadLockByISBN(bookMap.keySet());
@@ -501,7 +493,6 @@ public class TwoLevelLockingConcurrentCertainBookStore implements BookStore, Sto
         if (bookRating == null) {
             throw new BookStoreException(BookStoreConstants.NULL_INPUT);
         }
-
         topLevelReadLock.lock();
         try {
             // Check whether all books are in the collection.
@@ -513,8 +504,7 @@ public class TwoLevelLockingConcurrentCertainBookStore implements BookStore, Sto
 
             // If all books validated, then perform the ratings (all-or-nothing)
             for (BookRating bookRate : bookRating) {
-                BookStoreBook book = bookMap.get(bookRate.getISBN()).copy();
-                book.addRating(bookRate.getRating());
+                bookMap.get(bookRate.getISBN()).addRating(bookRate.getRating());
             }
         } finally {
             releaseBottomLevelWriteLockByISBN(bookRating.stream().map(BookRating::getISBN).collect(Collectors.toList()));
@@ -555,6 +545,7 @@ public class TwoLevelLockingConcurrentCertainBookStore implements BookStore, Sto
 
             for (int isbn : isbnSet) {
                 bookMap.remove(isbn);
+                lockMap.remove(isbn);
             }
         } finally {
             topLevelWriteLock.unlock();
